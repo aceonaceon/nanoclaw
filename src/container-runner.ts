@@ -39,6 +39,7 @@ export interface ContainerInput {
   chatId: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  messageThreadId?: number;
 }
 
 export interface ContainerOutput {
@@ -108,6 +109,16 @@ function buildVolumeMounts(
   mounts.push({
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
+    readonly: false,
+  });
+
+  // Per-group skills directory for persistent custom skills
+  // Skills created by the agent will be saved here and survive container restarts
+  const groupSkillsDir = path.join(GROUPS_DIR, group.folder, '.claude', 'skills');
+  fs.mkdirSync(groupSkillsDir, { recursive: true });
+  mounts.push({
+    hostPath: groupSkillsDir,
+    containerPath: '/workspace/group/.claude/skills',
     readonly: false,
   });
 
