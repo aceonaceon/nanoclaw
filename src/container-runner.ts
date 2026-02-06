@@ -112,6 +112,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Per-group skills directory for persistent custom skills
+  // Skills created by the agent will be saved here and survive container restarts
+  const groupSkillsDir = path.join(GROUPS_DIR, group.folder, '.claude', 'skills');
+  fs.mkdirSync(groupSkillsDir, { recursive: true });
+  mounts.push({
+    hostPath: groupSkillsDir,
+    containerPath: '/workspace/group/.claude/skills',
+    readonly: false,
+  });
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
