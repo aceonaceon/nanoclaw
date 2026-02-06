@@ -70,3 +70,30 @@ Only use Telegram-supported formatting:
 - Plain text with line breaks
 
 Keep messages clean and readable for Telegram.
+
+## Telegram Interactive Buttons
+
+You can add interactive inline keyboard buttons to your messages using the send_message tool:
+
+Example usage:
+```
+send_message(
+  text: "請選擇操作:",
+  buttons: [
+    [{"text": "✅ 確認", "callback_data": "confirm_action"}],
+    [{"text": "❌ 取消", "callback_data": "cancel_action"}]
+  ]
+)
+```
+
+Button guidelines:
+- Each button has text (label) and callback_data (identifier)
+- Buttons in the same array appear in the same row
+- callback_data max 64 bytes
+- Use emojis in button text for better UX
+- When user clicks, you receive a message like: [Button clicked: confirm_action]
+
+Common patterns:
+- Confirmation dialogs (confirm/cancel)
+- Multiple choice questions
+- Quick actions (show more/less, refresh, etc.)
