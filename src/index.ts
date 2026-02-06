@@ -4,8 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import chokidar from 'chokidar';
 
-import { Telegraf, Context } from 'telegraf';
-import { Message } from 'telegraf/types';
+import { Telegraf, Context, Markup } from 'telegraf';
+import { Message, InlineKeyboardButton } from 'telegraf/types';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -293,13 +293,25 @@ async function runAgent(
   }
 }
 
-async function sendMessage(chatId: number | string, text: string): Promise<void> {
+async function sendMessage(
+  chatId: number | string,
+  text: string,
+  buttons?: InlineKeyboardButton[][],
+): Promise<void> {
   try {
     const chatIdNum = typeof chatId === 'string' ? parseInt(chatId, 10) : chatId;
-    await bot.telegram.sendMessage(chatIdNum, text, {
+    const options: any = {
       parse_mode: 'Markdown',
-    });
-    logger.info({ chatId: chatIdNum, length: text.length }, 'Message sent');
+    };
+
+    if (buttons && buttons.length > 0) {
+      options.reply_markup = {
+        inline_keyboard: buttons,
+      };
+    }
+
+    await bot.telegram.sendMessage(chatIdNum, text, options);
+    logger.info({ chatId: chatIdNum, length: text.length, hasButtons: !!buttons }, 'Message sent');
   } catch (err) {
     logger.error({ chatId, err }, 'Failed to send message');
   }
@@ -354,9 +366,10 @@ function startIpcWatcher(): void {
                   await sendMessage(
                     data.chatId,
                     `${ASSISTANT_NAME}: ${data.text}`,
+                    data.buttons, // Pass through buttons if present
                   );
                   logger.info(
-                    { chatId: data.chatId, sourceGroup },
+                    { chatId: data.chatId, sourceGroup, hasButtons: !!data.buttons },
                     'IPC message sent',
                   );
                 } else {
@@ -787,6 +800,75 @@ async function connectTelegram(): Promise<void> {
       processMessage(newMessage).catch((err) => {
         logger.error({ err, messageId, chatId }, 'Error processing message');
       });
+    }
+  });
+
+  // Handle callback queries (button clicks)
+  bot.on('callback_query', async (ctx) => {
+    try {
+      const callbackData = 'data' in ctx.callbackQuery ? ctx.callbackQuery.data : undefined;
+
+      if (!callbackData) {
+        await ctx.answerCbQuery('Invalid button');
+        return;
+      }
+
+      logger.info(
+        {
+          chatId: ctx.chat?.id,
+          userId: ctx.from.id,
+          data: callbackData
+        },
+        'Callback query received'
+      );
+
+      // Answer the callback query to remove loading state
+      await ctx.answerCbQuery();
+
+      // Handle different callback actions
+      if (callbackData.startsWith('confirm_')) {
+        const action = callbackData.replace('confirm_', '');
+        await ctx.editMessageText(`已確認: ${action}`);
+      } else if (callbackData.startsWith('cancel_')) {
+        await ctx.editMessageText('已取消操作');
+      } else {
+        // For other callbacks, send the data to the agent for processing
+        const chatId = ctx.chat!.id;
+        const chatKey = chatId.toString();
+        const group = registeredGroups[chatKey];
+
+        if (group) {
+          const username = ctx.from.username || ctx.from.first_name || 'Unknown';
+          const timestamp = new Date().toISOString();
+
+          // Store as a message for context
+          storeTelegramMessage(
+            ctx.callbackQuery.message?.message_id || Date.now(),
+            chatId,
+            ctx.from.id,
+            username,
+            `[Button: ${callbackData}]`,
+            false,
+            timestamp,
+          );
+
+          // Process as a message
+          const newMessage: NewMessage = {
+            id: ctx.callbackQuery.id,
+            chat_id: chatId,
+            user_id: ctx.from.id,
+            sender_name: username,
+            content: `[Button clicked: ${callbackData}]`,
+            timestamp,
+            is_from_bot: false,
+          };
+
+          await processMessage(newMessage);
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Error handling callback query');
+      ctx.answerCbQuery('處理錯誤').catch(() => {});
     }
   });
 

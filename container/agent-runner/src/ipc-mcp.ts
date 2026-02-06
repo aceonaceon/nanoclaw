@@ -42,15 +42,33 @@ export function createIpcMcp(ctx: IpcMcpContext) {
     tools: [
       tool(
         'send_message',
-        'Send a message to the current WhatsApp group. Use this to proactively share information or updates.',
+        `Send a message to the current Telegram group. Use this to proactively share information or updates.
+
+BUTTONS (optional): You can add interactive inline keyboard buttons to your message.
+Each button is an object with:
+- text: The button label shown to user
+- callback_data: A unique identifier (max 64 bytes) sent back when clicked
+
+Example buttons format:
+[
+  [{"text": "確認", "callback_data": "confirm_action"}],
+  [{"text": "取消", "callback_data": "cancel_action"}]
+]
+
+This creates two rows, each with one button. Buttons in the same array appear in the same row.`,
         {
-          text: z.string().describe('The message text to send')
+          text: z.string().describe('The message text to send'),
+          buttons: z.array(z.array(z.object({
+            text: z.string().describe('Button label'),
+            callback_data: z.string().describe('Callback identifier (max 64 bytes)')
+          }))).optional().describe('Optional inline keyboard buttons (array of rows)')
         },
         async (args) => {
           const data = {
             type: 'message',
             chatJid,
             text: args.text,
+            buttons: args.buttons,
             groupFolder,
             timestamp: new Date().toISOString()
           };
