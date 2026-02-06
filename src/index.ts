@@ -356,25 +356,27 @@ function startIpcWatcher(): void {
             const filePath = path.join(messagesDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (data.type === 'message' && data.chatId && data.text) {
+              // Support both chatId and chatJid for backward compatibility
+              const chatId = data.chatId || data.chatJid;
+              if (data.type === 'message' && chatId && data.text) {
                 // Authorization: verify this group can send to this chatId
-                const targetGroup = registeredGroups[data.chatId.toString()];
+                const targetGroup = registeredGroups[chatId.toString()];
                 if (
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   await sendMessage(
-                    data.chatId,
+                    chatId,
                     `${ASSISTANT_NAME}: ${data.text}`,
                     data.buttons, // Pass through buttons if present
                   );
                   logger.info(
-                    { chatId: data.chatId, sourceGroup, hasButtons: !!data.buttons },
+                    { chatId, sourceGroup, hasButtons: !!data.buttons },
                     'IPC message sent',
                   );
                 } else {
                   logger.warn(
-                    { chatId: data.chatId, sourceGroup },
+                    { chatId, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
                   );
                 }
