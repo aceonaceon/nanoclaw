@@ -317,8 +317,26 @@ async function sendMessage(
       options.message_thread_id = messageThreadId;
     }
 
-    await bot.telegram.sendMessage(chatIdNum, text, options);
-    logger.info({ chatId: chatIdNum, length: text.length, hasButtons: !!buttons, messageThreadId }, 'Message sent');
+    try {
+      await bot.telegram.sendMessage(chatIdNum, text, options);
+      logger.info({ chatId: chatIdNum, length: text.length, hasButtons: !!buttons, messageThreadId }, 'Message sent');
+    } catch (markdownErr: any) {
+      // If Markdown parsing fails, retry without parse_mode (plain text)
+      if (markdownErr.description?.includes('parse entities')) {
+        logger.warn({ chatId: chatIdNum, error: markdownErr.description }, 'Markdown parse failed, retrying as plain text');
+        const plainOptions: any = {};
+        if (buttons && buttons.length > 0) {
+          plainOptions.reply_markup = options.reply_markup;
+        }
+        if (messageThreadId) {
+          plainOptions.message_thread_id = messageThreadId;
+        }
+        await bot.telegram.sendMessage(chatIdNum, text, plainOptions);
+        logger.info({ chatId: chatIdNum, length: text.length, hasButtons: !!buttons, messageThreadId }, 'Message sent (plain text fallback)');
+      } else {
+        throw markdownErr;
+      }
+    }
   } catch (err) {
     logger.error({ chatId, err }, 'Failed to send message');
   }
