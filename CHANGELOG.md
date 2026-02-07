@@ -5,6 +5,10 @@ All notable changes to this fork of NanoClaw will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<p align="right">
+  <b>English</b> | <a href="docs/zh-TW/CHANGELOG.md">繁體中文</a>
+</p>
+
 ## [2.0.0] - 2024-02-07
 
 ### 🎉 Major Release: Advanced Skills Architecture

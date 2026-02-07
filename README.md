@@ -8,6 +8,10 @@
   <i>Fork of <a href="https://github.com/gavrielc/nanoclaw">gavrielc/nanoclaw</a> optimized for VPS deployment</i>
 </p>
 
+<p align="right">
+  <b>English</b> | <a href="docs/zh-TW/README.md">繁體中文</a>
+</p>
+
 ---
 
 ## 🚀 What's New in This Fork
