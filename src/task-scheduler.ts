@@ -93,6 +93,7 @@ async function runTask(
       chatId: task.chat_id.toString(),
       isMain,
       isScheduledTask: true,
+      messageThreadId: task.message_thread_id ?? undefined,
     });
 
     if (output.status === 'error') {
@@ -140,15 +141,8 @@ async function runTask(
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 
-  // Send result message to group if there's output
-  if (result && result.trim()) {
-    try {
-      await deps.sendMessage(task.chat_id.toString(), result, undefined, task.message_thread_id ?? undefined);
-      logger.info({ taskId: task.id, chatId: task.chat_id, messageThreadId: task.message_thread_id }, 'Task result sent to group');
-    } catch (err) {
-      logger.error({ taskId: task.id, err }, 'Failed to send task result');
-    }
-  }
+  // Scheduled tasks communicate via mcp__nanoclaw__send_message tool inside the container.
+  // Do not send result text here to avoid duplicate messages.
 }
 
 let schedulerRunning = false;

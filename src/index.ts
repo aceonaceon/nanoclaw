@@ -972,16 +972,19 @@ async function connectTelegram(): Promise<void> {
         if (group) {
           const username = ctx.from.username || ctx.from.first_name || 'Unknown';
           const timestamp = new Date().toISOString();
+          const cbMessage = ctx.callbackQuery.message;
+          const messageThreadId = cbMessage && 'message_thread_id' in cbMessage ? cbMessage.message_thread_id : undefined;
 
           // Store as a message for context
           storeTelegramMessage(
-            ctx.callbackQuery.message?.message_id || Date.now(),
+            cbMessage?.message_id || Date.now(),
             chatId,
             ctx.from.id,
             username,
             `[Button: ${callbackData}]`,
             false,
             timestamp,
+            messageThreadId,
           );
 
           // Process as a message
@@ -993,6 +996,7 @@ async function connectTelegram(): Promise<void> {
             content: `[Button clicked: ${callbackData}]`,
             timestamp,
             is_from_bot: false,
+            message_thread_id: messageThreadId,
           };
 
           await processMessage(newMessage);
