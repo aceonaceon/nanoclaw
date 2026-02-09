@@ -191,8 +191,11 @@ async function processMessage(msg: NewMessage): Promise<void> {
   const content = msg.content.trim();
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
-  // Main group responds to all messages; other groups require trigger prefix
-  if (!isMainGroup && !TRIGGER_PATTERN.test(content)) return;
+  // Button clicks should always be processed (they start with [Button)
+  const isButtonClick = content.startsWith('[Button');
+
+  // Main group responds to all messages; other groups require trigger prefix (unless it's a button click)
+  if (!isMainGroup && !isButtonClick && !TRIGGER_PATTERN.test(content)) return;
 
   // Get all messages since last agent interaction so the session has full context
   const sinceTimestamp = lastAgentTimestamp[msg.chat_id.toString()] || '';
@@ -221,13 +224,72 @@ async function processMessage(msg: NewMessage): Promise<void> {
     'Processing message',
   );
 
-  await setTyping(msg.chat_id, true);
-  const response = await runAgent(group, prompt, msg.chat_id.toString(), msg.message_thread_id);
-  await setTyping(msg.chat_id, false);
+  // Status message tracking
+  let statusMessageId: number | null = null;
+  let statusTimer: NodeJS.Timeout | null = null;
+  let updateTimer: NodeJS.Timeout | null = null;
+  const startTime = Date.now();
 
-  if (response) {
-    lastAgentTimestamp[msg.chat_id.toString()] = msg.timestamp;
-    await sendMessage(msg.chat_id, `${ASSISTANT_NAME}: ${response}`, undefined, msg.message_thread_id);
+  // Send initial status message after 3 seconds if not completed
+  statusTimer = setTimeout(async () => {
+    statusMessageId = await sendMessage(
+      msg.chat_id,
+      '⏳ 正在處理你的請求...',
+      undefined,
+      msg.message_thread_id,
+    );
+
+    // Update status every 30 seconds
+    if (statusMessageId) {
+      updateTimer = setInterval(async () => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        if (statusMessageId) {
+          await editMessage(
+            msg.chat_id,
+            statusMessageId,
+            `⏳ 處理中，請稍候...（已執行 ${elapsed} 秒）`,
+          );
+        }
+      }, 30000);
+    }
+  }, 3000);
+
+  try {
+    await setTyping(msg.chat_id, true);
+    const response = await runAgent(group, prompt, msg.chat_id.toString(), msg.message_thread_id);
+    await setTyping(msg.chat_id, false);
+
+    // Clear timers
+    if (statusTimer) clearTimeout(statusTimer);
+    if (updateTimer) clearInterval(updateTimer);
+
+    // Delete status message if it was sent
+    if (statusMessageId) {
+      try {
+        await bot.telegram.deleteMessage(msg.chat_id, statusMessageId);
+      } catch (err) {
+        logger.warn({ chatId: msg.chat_id, messageId: statusMessageId }, 'Failed to delete status message');
+      }
+    }
+
+    if (response) {
+      lastAgentTimestamp[msg.chat_id.toString()] = msg.timestamp;
+      await sendMessage(msg.chat_id, `${ASSISTANT_NAME}: ${response}`, undefined, msg.message_thread_id);
+    }
+  } catch (err) {
+    // Clear timers on error
+    if (statusTimer) clearTimeout(statusTimer);
+    if (updateTimer) clearInterval(updateTimer);
+
+    // Update or send error message
+    const errorMsg = `❌ 處理失敗: ${err instanceof Error ? err.message : String(err)}`;
+    if (statusMessageId) {
+      await editMessage(msg.chat_id, statusMessageId, errorMsg);
+    } else {
+      await sendMessage(msg.chat_id, errorMsg, undefined, msg.message_thread_id);
+    }
+
+    logger.error({ err, group: group.name }, 'Error processing message');
   }
 }
 
@@ -285,13 +347,47 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
-      return null;
+      // Throw error with detailed message
+      if (output.error?.includes('timed out')) {
+        throw new Error(`處理超時（超過 5 分鐘）`);
+      } else if (output.error?.includes('overloaded_error') || output.error?.includes('529')) {
+        throw new Error(`API 服務繁忙，請稍後再試`);
+      } else {
+        throw new Error(output.error || '處理過程發生錯誤');
+      }
     }
 
     return output.result;
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
-    return null;
+
+    // Re-throw with user-friendly message
+    if (err instanceof Error) {
+      if (err.message.includes('API')) {
+        throw err; // Already user-friendly
+      } else if (err.message.includes('quota') || err.message.includes('429')) {
+        throw new Error('API 用量已達上限，請稍後再試');
+      } else if (err.message.includes('ECONNREFUSED') || err.message.includes('network')) {
+        throw new Error('網路連線失敗，請檢查網路狀態');
+      }
+    }
+    throw err;
+  }
+}
+
+async function editMessage(
+  chatId: number | string,
+  messageId: number,
+  text: string,
+): Promise<void> {
+  try {
+    const chatIdNum = typeof chatId === 'string' ? parseInt(chatId, 10) : chatId;
+    await bot.telegram.editMessageText(chatIdNum, messageId, undefined, text, {
+      parse_mode: 'Markdown',
+    });
+    logger.info({ chatId: chatIdNum, messageId }, 'Message edited');
+  } catch (err) {
+    logger.error({ chatId, messageId, err }, 'Failed to edit message');
   }
 }
 
@@ -300,7 +396,7 @@ async function sendMessage(
   text: string,
   buttons?: InlineKeyboardButton[][],
   messageThreadId?: number,
-): Promise<void> {
+): Promise<number | null> {
   try {
     const chatIdNum = typeof chatId === 'string' ? parseInt(chatId, 10) : chatId;
     const options: any = {
@@ -318,8 +414,9 @@ async function sendMessage(
     }
 
     try {
-      await bot.telegram.sendMessage(chatIdNum, text, options);
+      const sentMessage = await bot.telegram.sendMessage(chatIdNum, text, options);
       logger.info({ chatId: chatIdNum, length: text.length, hasButtons: !!buttons, messageThreadId }, 'Message sent');
+      return sentMessage.message_id;
     } catch (markdownErr: any) {
       // If Markdown parsing fails, retry without parse_mode (plain text)
       if (markdownErr.description?.includes('parse entities')) {
@@ -331,14 +428,16 @@ async function sendMessage(
         if (messageThreadId) {
           plainOptions.message_thread_id = messageThreadId;
         }
-        await bot.telegram.sendMessage(chatIdNum, text, plainOptions);
+        const sentMessage = await bot.telegram.sendMessage(chatIdNum, text, plainOptions);
         logger.info({ chatId: chatIdNum, length: text.length, hasButtons: !!buttons, messageThreadId }, 'Message sent (plain text fallback)');
+        return sentMessage.message_id;
       } else {
         throw markdownErr;
       }
     }
   } catch (err) {
     logger.error({ chatId, err }, 'Failed to send message');
+    return null;
   }
 }
 
@@ -483,6 +582,7 @@ async function processTaskIpc(
     context_mode?: string;
     groupFolder?: string;
     chatId?: number; // Used for both schedule_task and register_group
+    messageThreadId?: number; // Telegram topic/thread ID for scheduled tasks
     name?: string;
     folder?: string;
     trigger?: string;
@@ -580,6 +680,7 @@ async function processTaskIpc(
           id: taskId,
           group_folder: targetGroup,
           chat_id: targetChatId,
+          message_thread_id: data.messageThreadId ?? null,
           prompt: data.prompt,
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
@@ -871,16 +972,19 @@ async function connectTelegram(): Promise<void> {
         if (group) {
           const username = ctx.from.username || ctx.from.first_name || 'Unknown';
           const timestamp = new Date().toISOString();
+          const cbMessage = ctx.callbackQuery.message;
+          const messageThreadId = cbMessage && 'message_thread_id' in cbMessage ? cbMessage.message_thread_id : undefined;
 
           // Store as a message for context
           storeTelegramMessage(
-            ctx.callbackQuery.message?.message_id || Date.now(),
+            cbMessage?.message_id || Date.now(),
             chatId,
             ctx.from.id,
             username,
             `[Button: ${callbackData}]`,
             false,
             timestamp,
+            messageThreadId,
           );
 
           // Process as a message
@@ -892,6 +996,7 @@ async function connectTelegram(): Promise<void> {
             content: `[Button clicked: ${callbackData}]`,
             timestamp,
             is_from_bot: false,
+            message_thread_id: messageThreadId,
           };
 
           await processMessage(newMessage);
@@ -911,15 +1016,21 @@ async function connectTelegram(): Promise<void> {
   // Launch bot (Long Polling)
   try {
     logger.info('Connecting to Telegram...');
-    bot.launch({
-      dropPendingUpdates: true,
-    }).then(() => {
-      logger.info('Connected to Telegram');
-      logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
-    }).catch((err) => {
-      logger.error({ err }, 'Failed to launch Telegram bot');
-      throw err;
-    });
+
+    // Launch bot asynchronously (don't wait for completion)
+    // The bot will start polling in the background
+    bot.launch({ dropPendingUpdates: true })
+      .then(() => {
+        logger.info('Bot polling started successfully');
+      })
+      .catch((err) => {
+        logger.error({ err }, 'Bot launch error (may still work)');
+      });
+
+    // Verify connection by calling getMe (this should work immediately)
+    const botInfo = await bot.telegram.getMe();
+    logger.info({ botId: botInfo.id, username: botInfo.username }, 'Connected to Telegram');
+    logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
 
     // Sync group metadata on startup (respects 24h cache)
     syncGroupMetadata().catch((err) =>
@@ -949,14 +1060,61 @@ async function connectTelegram(): Promise<void> {
   }
 
   // Graceful shutdown
-  process.once('SIGINT', () => {
+  process.once('SIGINT', async () => {
     logger.info('SIGINT received, stopping bot');
-    bot.stop('SIGINT');
+    try {
+      await bot.stop('SIGINT');
+      logger.info('Bot stopped successfully');
+    } catch (err) {
+      logger.error({ err }, 'Error stopping bot');
+    }
+    process.exit(0);
   });
-  process.once('SIGTERM', () => {
+  process.once('SIGTERM', async () => {
     logger.info('SIGTERM received, stopping bot');
-    bot.stop('SIGTERM');
+    try {
+      await bot.stop('SIGTERM');
+      logger.info('Bot stopped successfully');
+    } catch (err) {
+      logger.error({ err }, 'Error stopping bot');
+    }
+    process.exit(0);
   });
+}
+
+async function ensureNativeModulesHealthy(): Promise<void> {
+  try {
+    // Try to load better-sqlite3 to verify it's not corrupted
+    // Use dynamic import for ESM compatibility
+    const { default: Database } = await import('better-sqlite3');
+    // Simple test with in-memory database
+    const testDb = new Database(':memory:');
+    testDb.close();
+    logger.debug('Native modules health check passed');
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Native module corrupted (likely due to Docker VirtioFS), attempting rebuild...',
+    );
+    try {
+      execSync('npm rebuild better-sqlite3', {
+        cwd: process.cwd(),
+        stdio: 'inherit',
+      });
+      logger.info('Native modules rebuilt successfully');
+
+      // Verify rebuild was successful
+      const { default: Database } = await import('better-sqlite3');
+      const testDb = new Database(':memory:');
+      testDb.close();
+      logger.info('Native modules verified after rebuild');
+    } catch (rebuildErr) {
+      logger.error({ rebuildErr }, 'Failed to rebuild native modules');
+      throw new Error(
+        'Native modules are corrupted and automatic rebuild failed. Please run: npm rebuild',
+      );
+    }
+  }
 }
 
 function ensureContainerSystemRunning(): void {
@@ -994,6 +1152,8 @@ function ensureContainerSystemRunning(): void {
 }
 
 async function main(): Promise<void> {
+  // Check native modules health before anything else
+  await ensureNativeModulesHealthy();
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');

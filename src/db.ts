@@ -12,7 +12,68 @@ export function initDatabase(): void {
   const dbPath = path.join(STORE_DIR, 'messages.db');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-  db = new Database(dbPath);
+  try {
+    db = new Database(dbPath, { timeout: 10000 });
+
+    // Enable WAL mode for better concurrency
+    db.pragma('journal_mode = WAL');
+
+    // Set WAL auto-checkpoint to prevent WAL file from growing too large
+    db.pragma('wal_autocheckpoint = 1000');
+
+    // Verify database integrity
+    const integrityResult = db.pragma('integrity_check', { simple: true }) as
+      | Array<{ integrity_check: string }>
+      | string;
+    const isOk =
+      typeof integrityResult === 'string'
+        ? integrityResult === 'ok'
+        : integrityResult[0]?.integrity_check === 'ok';
+
+    if (!isOk) {
+      logger.warn(
+        { integrityResult },
+        'Database integrity check failed, attempting WAL checkpoint',
+      );
+      // Try to recover by checkpointing WAL
+      db.pragma('wal_checkpoint(TRUNCATE)');
+      logger.info('WAL checkpoint completed');
+    } else {
+      logger.debug('Database integrity check passed');
+    }
+  } catch (err) {
+    logger.error(
+      { err },
+      'Database initialization failed, attempting recovery by recreating database',
+    );
+
+    // Close database if it was opened
+    try {
+      if (db) db.close();
+    } catch (closeErr) {
+      logger.debug({ closeErr }, 'Error closing corrupted database');
+    }
+
+    // Backup corrupted database
+    const backupPath = dbPath.replace(
+      '.db',
+      `.corrupted-${Date.now()}.db`,
+    );
+    try {
+      if (fs.existsSync(dbPath)) {
+        fs.renameSync(dbPath, backupPath);
+        logger.warn({ backupPath }, 'Corrupted database backed up');
+      }
+    } catch (backupErr) {
+      logger.error({ backupErr }, 'Failed to backup corrupted database');
+    }
+
+    // Create fresh database
+    db = new Database(dbPath, { timeout: 10000 });
+    db.pragma('journal_mode = WAL');
+    db.pragma('wal_autocheckpoint = 1000');
+    logger.info('Fresh database created after recovery');
+  }
 
   // Check if we need to migrate from WhatsApp schema
   const tables = db
@@ -77,6 +138,7 @@ export function initDatabase(): void {
       id TEXT PRIMARY KEY,
       group_folder TEXT NOT NULL,
       chat_id INTEGER NOT NULL,
+      message_thread_id INTEGER,
       prompt TEXT NOT NULL,
       schedule_type TEXT NOT NULL,
       schedule_value TEXT NOT NULL,
@@ -102,6 +164,17 @@ export function initDatabase(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
   `);
+
+  // Migrate: add message_thread_id column if missing
+  try {
+    const taskColumns = db.pragma('table_info(scheduled_tasks)') as { name: string }[];
+    if (taskColumns.length > 0 && !taskColumns.some(col => col.name === 'message_thread_id')) {
+      db.exec('ALTER TABLE scheduled_tasks ADD COLUMN message_thread_id INTEGER');
+      logger.info('Migrated scheduled_tasks: added message_thread_id column');
+    }
+  } catch (err) {
+    logger.debug({ err }, 'Migration check for message_thread_id skipped');
+  }
 
   // Insert special marker for group sync (chat_id = -1)
   db.prepare(`
@@ -275,13 +348,14 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_id, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_id, message_thread_id, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
     task.group_folder,
     task.chat_id,
+    task.message_thread_id ?? null,
     task.prompt,
     task.schedule_type,
     task.schedule_value,
