@@ -35,6 +35,10 @@ services:
       - CONTAINER_TIMEOUT=${CONTAINER_TIMEOUT:-300000}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - TZ=${TZ:-Asia/Taipei}
+      # VPS: Pass host paths so agent containers can mount from host, not from inside main container
+      - HOST_PROJECT_ROOT=${PWD}
+      - HOST_GROUPS_DIR=${PWD}/groups-bot1
+      - HOST_DATA_DIR=${PWD}/data-bot1
     networks:
       - nanoclaw-net
   # ===========================================
