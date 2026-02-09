@@ -1,10 +1,13 @@
 #!/bin/bash
-# Test container with proper mounts (Local development on macOS)
-# For VPS/Linux, use: ./test-container-vps.sh
+# Test NanoClaw agent container on VPS/Linux
+# Usage: ./test-container-vps.sh
+
+set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_ROOT"
 
-echo "=== Testing NanoClaw Agent Container (Local Dev) ==="
+echo "=== Testing NanoClaw Agent Container ==="
 echo "Project root: $PROJECT_ROOT"
 echo ""
 
@@ -15,7 +18,14 @@ if ! docker image inspect nanoclaw-agent:latest > /dev/null 2>&1; then
     exit 1
 fi
 
-echo "✅ Agent image found"
+# Check if .env exists
+if [ ! -f .env ]; then
+    echo "❌ Error: .env file not found"
+    echo "   Run: cp .env.vps.example .env (or .env.example for local dev)"
+    exit 1
+fi
+
+echo "✅ Prerequisites OK"
 echo ""
 echo "Running test: 'What is 2+2?'"
 echo "---"
