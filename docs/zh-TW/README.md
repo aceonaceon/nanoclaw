@@ -288,19 +288,32 @@ services:
 ### 部署步驟
 
 ```bash
-# 在你的 VPS 上
+# 1. 在你的 VPS 上 clone 專案
 git clone https://github.com/yourusername/nanoclaw
 cd nanoclaw
 
-# 為所有機器人構建一次
-./container/build.sh
+# 2. 安裝依賴並編譯
+npm install
+npm run build
 
-# 啟動所有機器人
-docker compose -f docker-compose.vps.yml up -d
+# 3. 設定環境變數
+cp .env.vps.example .env
+nano .env  # 填入 BOT1_TOKEN, ANTHROPIC_API_KEY 等
 
-# 檢查狀態
+# 4. 建置 agent 容器映像（首次執行前必須）
+cd container
+./build.sh
+cd ..
+
+# 5. 使用 Docker Compose 啟動所有機器人
+docker compose -f docker-compose.vps.yml up -d --build
+
+# 6. 檢查狀態和日誌
 docker compose -f docker-compose.vps.yml ps
+docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
 ```
+
+**注意**：agent 映像建置（步驟 4）只需執行一次，或當你更新 skills/依賴時執行。`Dockerfile.vps` 的 entrypoint 會在映像不存在時自動建置，但手動先建置可以提供更好的錯誤可見性。
 
 ---
 
