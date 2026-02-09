@@ -308,12 +308,19 @@ cd ..
 # 5. 使用 Docker Compose 啟動所有機器人
 docker compose -f docker-compose.vps.yml up -d --build
 
-# 6. 檢查狀態和日誌
+# 6. 配對你的 Telegram 聊天為主群組
+./pair-main-group.sh
+# 依照提示：在 Telegram 發送訊息給 bot，然後確認
+
+# 7. 檢查狀態和日誌
 docker compose -f docker-compose.vps.yml ps
 docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
 ```
 
-**注意**：agent 映像建置（步驟 4）只需執行一次，或當你更新 skills/依賴時執行。`Dockerfile.vps` 的 entrypoint 會在映像不存在時自動建置，但手動先建置可以提供更好的錯誤可見性。
+**注意**：
+- agent 映像建置（步驟 4）只需執行一次，或當你更新 skills/依賴時執行
+- 配對腳本（步驟 6）會註冊你的 Telegram 聊天，讓 bot 可以回應你的訊息
+- 配對後，可以直接與 bot 對話，不需要觸發詞
 
 ---
 
