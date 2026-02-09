@@ -12,6 +12,23 @@ echo "║         NanoClaw Main Group Pairing                       ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
+# Check if sqlite3 is installed
+if ! command -v sqlite3 &> /dev/null; then
+    echo "⚠️  sqlite3 not found. Installing..."
+    if command -v apt-get &> /dev/null; then
+        apt-get update -qq && apt-get install -y -qq sqlite3 > /dev/null 2>&1
+        echo "✅ sqlite3 installed"
+    elif command -v yum &> /dev/null; then
+        yum install -y -q sqlite > /dev/null 2>&1
+        echo "✅ sqlite3 installed"
+    else
+        echo "❌ Could not install sqlite3 automatically."
+        echo "   Please install it manually: apt install sqlite3"
+        exit 1
+    fi
+fi
+echo ""
+
 # Check if service is running
 if ! docker compose -f docker-compose.vps.yml ps | grep -q "Up"; then
     echo "⚠️  NanoClaw service is not running."
@@ -61,7 +78,7 @@ echo ""
 
 # Function to get latest chat
 get_latest_chat() {
-    sqlite3 "$DB_FILE" "SELECT chat_id, chat_name FROM chats WHERE chat_id > 0 ORDER BY last_activity DESC LIMIT 1" 2>/dev/null || echo ""
+    sqlite3 "$DB_FILE" "SELECT chat_id, name FROM chats WHERE chat_id > 0 ORDER BY last_message_time DESC LIMIT 1" 2>/dev/null || echo ""
 }
 
 INITIAL_CHAT=$(get_latest_chat)
