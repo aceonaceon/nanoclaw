@@ -1,5 +1,3 @@
-version: '3.8'
-
 # NanoClaw Multi-Bot VPS Deployment
 # 支援多個 Telegram Bot，共用同一套 Skills
 #
