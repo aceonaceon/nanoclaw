@@ -61,7 +61,13 @@ function buildVolumeMounts(
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const homeDir = getHomeDir();
-  const projectRoot = process.cwd();
+
+  // For VPS deployment: use host paths from environment variables
+  // When running inside Docker, process.cwd() returns container paths like /app
+  // But agent containers need actual host paths for bind mounts
+  const projectRoot = process.env.HOST_PROJECT_ROOT || process.cwd();
+  const groupsDir = process.env.HOST_GROUPS_DIR || GROUPS_DIR;
+  const dataDir = process.env.HOST_DATA_DIR || DATA_DIR;
 
   if (isMain) {
     // Main gets selective project directories (excluding node_modules to prevent
@@ -95,21 +101,21 @@ function buildVolumeMounts(
 
     // Main also gets its group folder as the working directory
     mounts.push({
-      hostPath: path.join(GROUPS_DIR, group.folder),
+      hostPath: path.join(groupsDir, group.folder),
       containerPath: '/workspace/group',
       readonly: false,
     });
   } else {
     // Other groups only get their own folder
     mounts.push({
-      hostPath: path.join(GROUPS_DIR, group.folder),
+      hostPath: path.join(groupsDir, group.folder),
       containerPath: '/workspace/group',
       readonly: false,
     });
 
     // Global memory directory (read-only for non-main)
     // Apple Container only supports directory mounts, not file mounts
-    const globalDir = path.join(GROUPS_DIR, 'global');
+    const globalDir = path.join(groupsDir, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
         hostPath: globalDir,
@@ -137,7 +143,7 @@ function buildVolumeMounts(
   // Per-group Claude sessions directory (isolated from other groups)
   // Each group gets their own .claude/ to prevent cross-group session access
   const groupSessionsDir = path.join(
-    DATA_DIR,
+    dataDir,
     'sessions',
     group.folder,
     '.claude',
@@ -151,7 +157,7 @@ function buildVolumeMounts(
 
   // Per-group skills directory for persistent custom skills
   // Skills created by the agent will be saved here and survive container restarts
-  const groupSkillsDir = path.join(GROUPS_DIR, group.folder, '.claude', 'skills');
+  const groupSkillsDir = path.join(groupsDir, group.folder, '.claude', 'skills');
   fs.mkdirSync(groupSkillsDir, { recursive: true });
   mounts.push({
     hostPath: groupSkillsDir,
@@ -161,7 +167,7 @@ function buildVolumeMounts(
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
-  const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
+  const groupIpcDir = path.join(dataDir, 'ipc', group.folder);
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   mounts.push({
