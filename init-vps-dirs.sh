@@ -20,6 +20,7 @@ echo ""
 DIRS=(
   "groups-$BOT_NUM/main"
   "groups-$BOT_NUM/main/.claude/skills"
+  "groups-$BOT_NUM/global"
   "data-$BOT_NUM/sessions/main/.claude"
   "data-$BOT_NUM/ipc/main/messages"
   "data-$BOT_NUM/ipc/main/tasks"
