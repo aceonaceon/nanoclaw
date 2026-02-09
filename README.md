@@ -288,19 +288,32 @@ services:
 ### Deployment Steps
 
 ```bash
-# On your VPS
+# 1. Clone the repository on your VPS
 git clone https://github.com/yourusername/nanoclaw
 cd nanoclaw
 
-# Build once for all bots
-./container/build.sh
+# 2. Install dependencies and build
+npm install
+npm run build
 
-# Start all bots
-docker compose -f docker-compose.vps.yml up -d
+# 3. Configure environment variables
+cp .env.vps.example .env
+nano .env  # Fill in BOT1_TOKEN, ANTHROPIC_API_KEY, etc.
 
-# Check status
+# 4. Build agent container image (required before first run)
+cd container
+./build.sh
+cd ..
+
+# 5. Start all bots with Docker Compose
+docker compose -f docker-compose.vps.yml up -d --build
+
+# 6. Check status and logs
 docker compose -f docker-compose.vps.yml ps
+docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
 ```
+
+**Note**: The agent image build (step 4) only needs to run once, or when you update skills/dependencies. The `Dockerfile.vps` entrypoint will auto-build if the image is missing, but manually building first provides better error visibility.
 
 ---
 
