@@ -13,7 +13,9 @@ RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
     jq \
-    && rm -rf /var/lib/apt/lists/*
+    gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && gosu nobody true
 
 # =============================================================================
 # Core stage: Required dependencies for all configurations
@@ -130,11 +132,6 @@ RUN npm prune --production
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/shared-skills /workspace/ipc/messages /workspace/ipc/tasks
 
-# Copy skills to container (will be mounted read-only in production)
-# This ensures skills are available even without mount for testing
-# Note: Build context is /container, so we need to go up one level
-# However, Docker doesn't allow COPY from parent directory, so we'll handle this differently
-
 # Create skills validation script (use .cjs extension for CommonJS)
 RUN echo '#!/usr/bin/env node' > /app/validate-skills.cjs && \
     echo 'const fs = require("fs");' >> /app/validate-skills.cjs && \
@@ -146,20 +143,19 @@ RUN echo '#!/usr/bin/env node' > /app/validate-skills.cjs && \
     echo 'skills.forEach(s => console.log("  - " + s));' >> /app/validate-skills.cjs && \
     chmod +x /app/validate-skills.cjs
 
-# Create entrypoint script
-RUN printf '#!/bin/bash\nset -e\n\n# Validate skills on startup\nnode /app/validate-skills.cjs\n\n# Source environment if exists\n[ -f /workspace/env-dir/env ] && export $(cat /workspace/env-dir/env | xargs)\n\n# Read input and run agent\ncat > /tmp/input.json\nnode /app/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && \
-    chmod +x /app/entrypoint.sh
+# Set default ownership to node user
+RUN chown -R node:node /workspace /app /home/node
 
-# Set ownership to node user
-RUN chown -R node:node /workspace /app
+# Copy entrypoint script
+# Handles: bind-mount permission fixing, skills validation, env sourcing, privilege dropping
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-# Switch to non-root user
-USER node
+# Stay as root - entrypoint handles user switching after fixing permissions
+# (bind mounts from host come in as root:root, must be chowned before agent runs)
 
 # Set working directory
 WORKDIR /workspace/group
-
-# Display build info (will show at build time, not runtime)
 
 # Entry point
 ENTRYPOINT ["/app/entrypoint.sh"]

@@ -183,6 +183,58 @@ docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
 
 ---
 
+## Fix #2: Bind-Mount Permissions (2026-02-09)
+
+### Problem
+
+After Fix #1, agent containers started successfully and received skills, but Claude Code CLI (PID 26) would hang in sleeping state (`ep_poll`) indefinitely with no output after `[agent-runner] Starting agent...`.
+
+### Root Cause
+
+All bind-mounted directories were owned by `root:root` on the host, but the container ran as `node` (UID 1000) via `USER node` in the Dockerfile. Claude Code CLI could not write to `~/.claude/` to initialize its config/session data, causing it to hang.
+
+**Affected directories:**
+- `/home/node/.claude/` (sessions) - Permission denied
+- `/workspace/group/` (group workspace) - Permission denied
+- `/workspace/ipc/` (IPC messaging) - Permission denied
+
+### Why It Happened
+
+1. `init-vps-dirs.sh` creates directories as root (VPS runs as root)
+2. Docker `-v` bind mounts preserve host ownership
+3. `Dockerfile` had `USER node` making the entrypoint run as UID 1000
+4. UID 1000 cannot write to root-owned directories
+
+### The Fix
+
+**1. New shared `container/entrypoint.sh`:**
+- Reads stdin immediately (prevents Docker pipe race conditions)
+- Starts as root to fix bind-mount ownership with `chown`
+- Uses `gosu` to drop to `node` user for agent execution
+- Works in both VPS (root start) and local (node start) modes
+
+**2. Updated `container/Dockerfile` and `container/Dockerfile.skills`:**
+- Install `gosu` package for secure privilege dropping
+- Removed `USER node` directive (entrypoint handles user switching)
+- Use shared `entrypoint.sh` instead of inline `RUN printf` scripts
+
+**3. Updated `init-vps-dirs.sh`:**
+- Added `chown -R 1000:1000` for all bind-mounted directories
+- Belt-and-suspenders approach (entrypoint also fixes on each run)
+
+### Key Insight: Docker Stdin Pipe Fragility
+
+During debugging, discovered that Docker stdin pipes can be consumed by Node.js subprocesses even when they don't explicitly read stdin. The entrypoint must read stdin into a temp file **before** running any Node.js subprocesses (like `validate-skills.cjs`).
+
+### Related Files
+
+- **Added:** `container/entrypoint.sh` (shared entrypoint with permission fix)
+- **Modified:** `container/Dockerfile` (gosu, removed USER node)
+- **Modified:** `container/Dockerfile.skills` (same changes)
+- **Modified:** `init-vps-dirs.sh` (chown to UID 1000)
+
+---
+
 **Status:** ✅ Fixed and Tested
 **Date:** 2026-02-09
-**Impact:** Critical - Unblocks VPS deployment completely
+**Impact:** Critical - Resolves agent hanging in VPS deployment

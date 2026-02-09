@@ -36,6 +36,13 @@ for dir in "${DIRS[@]}"; do
   fi
 done
 
+# Fix ownership for directories that get bind-mounted into agent containers
+# Agent containers run as node (UID 1000), so writable mounts must be owned by 1000
+echo ""
+echo "Setting ownership for agent container mounts (UID 1000)..."
+chown -R 1000:1000 "groups-$BOT_NUM" "data-$BOT_NUM"
+echo "✅ Ownership set"
+
 echo ""
 echo "✅ Directory initialization complete!"
 echo ""

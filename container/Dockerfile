@@ -25,7 +25,9 @@ RUN apt-get update && apt-get install -y \
     git \
     wget \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && gosu nobody true
 
 # Install Go for building CLI tools
 RUN wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz && \
@@ -65,15 +67,16 @@ RUN npm run build
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks
 
-# Create entrypoint script
-# Sources env from mounted /workspace/env-dir/env if it exists (workaround for Apple Container -i bug)
-RUN printf '#!/bin/bash\nset -e\n[ -f /workspace/env-dir/env ] && export $(cat /workspace/env-dir/env | xargs)\ncat > /tmp/input.json\nnode /app/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+# Set default ownership to node user for writable directories
+RUN chown -R node:node /workspace /home/node
 
-# Set ownership to node user (non-root) for writable directories
-RUN chown -R node:node /workspace
+# Copy entrypoint script
+# Handles: bind-mount permission fixing, env sourcing, privilege dropping
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-# Switch to non-root user (required for --dangerously-skip-permissions)
-USER node
+# Stay as root - entrypoint handles user switching after fixing permissions
+# (bind mounts from host come in as root:root, must be chowned before agent runs)
 
 # Set working directory to group workspace
 WORKDIR /workspace/group
