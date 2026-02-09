@@ -210,6 +210,16 @@ function buildVolumeMounts(
 function buildContainerArgs(mounts: VolumeMount[]): string[] {
   const args: string[] = ['run', '-i', '--rm'];
 
+  // Pass authentication environment variables directly (more reliable than file mounts)
+  const authVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
+  for (const varName of authVars) {
+    const value = process.env[varName];
+    if (value) {
+      args.push('-e', `${varName}=${value}`);
+      logger.debug({ varName }, 'Passing auth variable to container');
+    }
+  }
+
   // Apple Container: --mount for readonly, -v for read-write
   for (const mount of mounts) {
     if (mount.readonly) {
