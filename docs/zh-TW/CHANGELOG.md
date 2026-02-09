@@ -152,4 +152,4 @@
 
 相關問題：
 - **原始功能**：[gavrielc/nanoclaw/issues](https://github.com/gavrielc/nanoclaw/issues)
-- **Skills 系統**：[本 Fork 的 issues](https://github.com/yourusername/nanoclaw/issues)
+- **Skills 系統**：[本 Fork 的 issues](https://github.com/aceonaceon/nanoclaw/issues)

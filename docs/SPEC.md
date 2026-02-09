@@ -22,6 +22,10 @@ A personal Claude assistant accessible via WhatsApp, with persistent memory per 
 
 ## Architecture
 
+NanoClaw supports two deployment modes: **macOS** (Apple Container) and **VPS** (Docker-in-Docker). The core message flow is identical — only the container runtime differs.
+
+### macOS Mode (Apple Container)
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        HOST (macOS)                                  │
@@ -49,7 +53,6 @@ A personal Claude assistant accessible via WhatsApp, with persistent memory per 
 ├─────────────────────────────────────────────────────────────────────┤
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │                    AGENT RUNNER                               │   │
-│  │                                                                │   │
 │  │  Working directory: /workspace/group (mounted from host)       │   │
 │  │  Volume mounts:                                                │   │
 │  │    • groups/{name}/ → /workspace/group                         │   │
@@ -57,28 +60,69 @@ A personal Claude assistant accessible via WhatsApp, with persistent memory per 
 │  │    • data/sessions/{group}/.claude/ → /home/node/.claude/      │   │
 │  │    • Additional dirs → /workspace/extra/*                      │   │
 │  │                                                                │   │
-│  │  Tools (all groups):                                           │   │
-│  │    • Bash (safe - sandboxed in container!)                     │   │
-│  │    • Read, Write, Edit, Glob, Grep (file operations)           │   │
-│  │    • WebSearch, WebFetch (internet access)                     │   │
-│  │    • agent-browser (browser automation)                        │   │
-│  │    • mcp__nanoclaw__* (scheduler tools via IPC)                │   │
-│  │                                                                │   │
+│  │  Tools: Bash, Read, Write, Edit, Glob, Grep, WebSearch,       │   │
+│  │         WebFetch, agent-browser, mcp__nanoclaw__*              │   │
 │  └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+### VPS Mode (Docker-in-Docker)
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        VPS HOST (Ubuntu)                              │
+│                       Docker Engine                                   │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │  MAIN CONTAINER (nanoclaw-bot1)                              │    │
+│  │  Built from Dockerfile.vps                                    │    │
+│  │                                                                │    │
+│  │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐  │    │
+│  │  │ Telegram │   │  SQLite  │   │ Scheduler│   │   IPC    │  │    │
+│  │  │  Bot API │   │  (msgs)  │   │   Loop   │   │ Watcher  │  │    │
+│  │  └────┬─────┘   └────┬─────┘   └────┬─────┘   └──────────┘  │    │
+│  │       └──────────┬────┘──────────────┘                        │    │
+│  │                  │  spawns via docker.sock                     │    │
+│  │                  ▼                                              │    │
+│  │  Mounts: /var/run/docker.sock, data-bot1/, groups-bot1/,      │    │
+│  │          store-bot1/, container/                               │    │
+│  └───────────────────────────────────────────────────────────────┘    │
+│                  │                                                     │
+│                  ▼ docker run (using HOST paths for bind mounts)       │
+│  ┌───────────────────────────────────────────────────────────────┐    │
+│  │  AGENT CONTAINER (nanoclaw-agent:latest, ephemeral)           │    │
+│  │  entrypoint.sh: read stdin → chown dirs → gosu node → agent   │    │
+│  │                                                                │    │
+│  │  Volume mounts (from HOST, not from main container):           │    │
+│  │    • groups-bot1/{name}/ → /workspace/group                    │    │
+│  │    • groups-bot1/global/ → /workspace/global/ (non-main)       │    │
+│  │    • data-bot1/sessions/{group}/.claude/ → /home/node/.claude/ │    │
+│  │    • data-bot1/ipc/{group}/ → /workspace/ipc/                  │    │
+│  │    • skills/ → /workspace/shared-skills/ (read-only)           │    │
+│  │                                                                │    │
+│  │  Tools: same as macOS mode                                     │    │
+│  └───────────────────────────────────────────────────────────────┘    │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+**Key VPS differences:**
+- Main process runs inside a Docker container (built from `Dockerfile.vps`), not directly on the host
+- Agent containers are spawned via the host's Docker socket (`/var/run/docker.sock` mount)
+- `HOST_PROJECT_ROOT` env var signals VPS mode — `container-runner.ts` uses host filesystem paths for agent bind mounts instead of container-internal paths
+- Agent container entrypoint (`container/entrypoint.sh`) reads stdin to a temp file first (Node.js subprocesses can consume stdin), then `chown`s bind-mounted directories and drops to `node` user via `gosu`
 
 ### Technology Stack
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| WhatsApp Connection | Node.js (@whiskeysockets/baileys) | Connect to WhatsApp, send/receive messages |
+| Messaging | Telegram Bot API (grammy) | Send/receive messages |
 | Message Storage | SQLite (better-sqlite3) | Store messages for polling |
-| Container Runtime | Apple Container | Isolated Linux VMs for agent execution |
-| Agent | @anthropic-ai/claude-agent-sdk (0.2.29) | Run Claude with tools and MCP servers |
+| Container Runtime (macOS) | Apple Container | Isolated Linux VMs for agent execution |
+| Container Runtime (VPS) | Docker (Docker-in-Docker) | Containerized agent execution |
+| Agent | @anthropic-ai/claude-agent-sdk | Run Claude with tools and MCP servers |
 | Browser Automation | agent-browser + Chromium | Web interaction and screenshots |
-| Runtime | Node.js 20+ | Host process for routing and scheduling |
+| Runtime | Node.js 22+ | Host process for routing and scheduling |
 
 ---
 
@@ -105,7 +149,7 @@ nanoclaw/
 │   ├── db.ts                      # Database initialization and queries
 │   ├── whatsapp-auth.ts           # Standalone WhatsApp authentication
 │   ├── task-scheduler.ts          # Runs scheduled tasks when due
-│   └── container-runner.ts        # Spawns agents in Apple Containers
+│   └── container-runner.ts        # Spawns agents in containers (Apple Container or Docker)
 │
 ├── container/
 │   ├── Dockerfile                 # Container image (runs as 'node' user, includes Claude Code CLI)
@@ -479,20 +523,16 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 
 ## Deployment
 
-NanoClaw runs as a single macOS launchd service.
+NanoClaw supports two deployment modes:
 
-### Startup Sequence
+### Option A: macOS (launchd service)
 
-When NanoClaw starts, it:
-1. **Ensures Apple Container system is running** - Automatically starts it if needed (survives reboots)
+**Startup Sequence:**
+1. **Ensures Apple Container system is running** - Automatically starts it if needed
 2. Initializes the SQLite database
 3. Loads state (registered groups, sessions, router state)
 4. Connects to WhatsApp
-5. Starts the message polling loop
-6. Starts the scheduler loop
-7. Starts the IPC watcher for container messages
-
-### Service: com.nanoclaw
+5. Starts the message polling loop, scheduler loop, and IPC watcher
 
 **launchd/com.nanoclaw.plist:**
 ```xml
@@ -530,23 +570,51 @@ When NanoClaw starts, it:
 </plist>
 ```
 
-### Managing the Service
+```bash
+# Install / start / stop
+cp launchd/com.nanoclaw.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
+launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
+```
+
+### Option B: VPS (Docker Compose)
+
+Uses `docker-compose.vps.yml` with Docker-in-Docker architecture. The main container (`Dockerfile.vps`) runs the Node.js router and spawns agent containers via the host's Docker socket.
+
+**Startup Sequence:**
+1. Docker Compose builds and starts the main container
+2. Main container entrypoint checks if agent image exists, builds it if needed
+3. Node.js router starts: initializes SQLite, loads state, connects to Telegram
+4. Starts message polling loop, scheduler loop, and IPC watcher
+5. On each message, spawns an agent container via `docker run` using host paths
+
+**Key files:**
+| File | Purpose |
+|------|---------|
+| `docker-compose.vps.yml` | Multi-bot Docker Compose config |
+| `Dockerfile.vps` | Main container image (Node.js + Docker CLI) |
+| `.env.vps.example` | Environment variable template |
+| `init-vps-dirs.sh` | Creates directories with correct ownership (UID 1000) |
+| `pair-main-group.sh` | Interactive script to register Telegram chat as main group |
+| `container/entrypoint.sh` | Agent container entrypoint (stdin capture, chown, gosu) |
+
+**VPS-specific environment variables (set in docker-compose.vps.yml):**
+| Variable | Purpose |
+|----------|---------|
+| `HOST_PROJECT_ROOT` | Triggers VPS mode; host path for project root |
+| `HOST_GROUPS_DIR` | Host path for groups directory (agent bind mounts) |
+| `HOST_DATA_DIR` | Host path for data directory (agent bind mounts) |
+
+When `HOST_PROJECT_ROOT` is set, `container-runner.ts` uses these host paths instead of `process.cwd()` for building agent container bind mounts. This is necessary because the main container's filesystem paths (e.g., `/app/groups`) differ from the host paths that the Docker daemon needs for volume mounts.
 
 ```bash
-# Install service
-cp launchd/com.nanoclaw.plist ~/Library/LaunchAgents/
-
-# Start service
-launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
-
-# Stop service
-launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
-
-# Check status
-launchctl list | grep nanoclaw
+# Start / stop / restart
+docker compose -f docker-compose.vps.yml up -d --build
+docker compose -f docker-compose.vps.yml down
+docker compose -f docker-compose.vps.yml restart nanoclaw-bot1
 
 # View logs
-tail -f logs/nanoclaw.log
+docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
 ```
 
 ---
@@ -555,16 +623,25 @@ tail -f logs/nanoclaw.log
 
 ### Container Isolation
 
-All agents run inside Apple Container (lightweight Linux VMs), providing:
+All agents run inside containers (Apple Container on macOS, Docker on VPS), providing:
 - **Filesystem isolation**: Agents can only access mounted directories
-- **Safe Bash access**: Commands run inside the container, not on your Mac
+- **Safe Bash access**: Commands run inside the container, not on the host
 - **Network isolation**: Can be configured per-container if needed
 - **Process isolation**: Container processes can't affect the host
 - **Non-root user**: Container runs as unprivileged `node` user (uid 1000)
 
+### VPS: Permission Handling
+
+In Docker-in-Docker VPS deployments, bind-mounted directories are created by root on the host but need to be writable by the `node` user (UID 1000) inside agent containers. This is handled at two levels:
+
+1. **`init-vps-dirs.sh`**: Run at setup time, creates directories and sets `chown -R 1000:1000` on group and data directories
+2. **`container/entrypoint.sh`**: Runs as root on container start, `chown`s `/home/node/.claude/`, `/workspace/group/`, and `/workspace/ipc/` before dropping to `node` via `gosu`
+
+The entrypoint also reads stdin into a temp file before running any subprocesses, because Node.js child processes can consume the stdin pipe buffer even when they don't explicitly read from it.
+
 ### Prompt Injection Risk
 
-WhatsApp messages could contain malicious instructions attempting to manipulate Claude's behavior.
+Telegram/WhatsApp messages could contain malicious instructions attempting to manipulate Claude's behavior.
 
 **Mitigations:**
 - Container isolation limits blast radius
@@ -585,41 +662,78 @@ WhatsApp messages could contain malicious instructions attempting to manipulate 
 | Credential | Storage Location | Notes |
 |------------|------------------|-------|
 | Claude CLI Auth | data/sessions/{group}/.claude/ | Per-group isolation, mounted to /home/node/.claude/ |
-| WhatsApp Session | store/auth/ | Auto-created, persists ~20 days |
+| Telegram Session | store/ (SQLite DB) | Bot token-based, no expiry |
+| WhatsApp Session (macOS) | store/auth/ | Auto-created, persists ~20 days |
 
 ### File Permissions
 
 The groups/ folder contains personal memory and should be protected:
 ```bash
-chmod 700 groups/
+chmod 700 groups/       # macOS
+chmod 700 groups-bot1/  # VPS
 ```
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
+### Common Issues (All Modes)
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| "Claude Code process exited with code 1" | Session mount path wrong | Ensure mount is to `/home/node/.claude/` not `/root/.claude/` |
+| Session not continuing | Session ID not saved | Check `data/sessions.json` |
+| Session not continuing | Mount path mismatch | Container user is `node` with HOME=/home/node; sessions must be at `/home/node/.claude/` |
+| "No groups registered" | Haven't added groups | Pair via `pair-main-group.sh` (VPS) or `@Andy add group "Name"` (macOS) |
+
+### macOS-Specific Issues
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | No response to messages | Service not running | Check `launchctl list | grep nanoclaw` |
-| "Claude Code process exited with code 1" | Apple Container failed to start | Check logs; NanoClaw auto-starts container system but may fail |
-| "Claude Code process exited with code 1" | Session mount path wrong | Ensure mount is to `/home/node/.claude/` not `/root/.claude/` |
-| Session not continuing | Session ID not saved | Check `data/sessions.json` |
-| Session not continuing | Mount path mismatch | Container user is `node` with HOME=/home/node; sessions must be at `/home/node/.claude/` |
+| Container failed to start | Apple Container not running | Check logs; NanoClaw auto-starts container system but may fail |
 | "QR code expired" | WhatsApp session expired | Delete store/auth/ and restart |
-| "No groups registered" | Haven't added groups | Use `@Andy add group "Name"` in main |
 
-### Log Location
+### VPS-Specific Issues
 
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| Agent container hangs (no response) | Bind-mount permissions (root:root) | Run `./init-vps-dirs.sh` and restart |
+| Agent container hangs | Stdin consumed by subprocess | Should be fixed by entrypoint.sh stdin-to-tmpfile pattern |
+| Container exits immediately | Missing auth tokens | Check `.env` has `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` |
+| "Agent image not found" | Agent container not built | Run `cd container && ./build.sh` |
+
+**VPS debugging commands:**
+```bash
+# Check agent containers
+docker ps -a --filter "ancestor=nanoclaw-agent:latest"
+
+# Check file permissions inside agent
+docker exec <container_id> ls -la /home/node/.claude/
+
+# Check what a stuck process is waiting on
+docker exec <container_id> cat /proc/<pid>/wchan
+
+# Main container logs
+docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
+```
+
+### Log Locations
+
+**macOS:**
 - `logs/nanoclaw.log` - stdout
 - `logs/nanoclaw.error.log` - stderr
 
+**VPS:**
+- `docker compose -f docker-compose.vps.yml logs nanoclaw-bot1` - main container
+- `groups-bot1/{group}/logs/container-*.log` - per-agent run logs
+
 ### Debug Mode
 
-Run manually for verbose output:
 ```bash
+# macOS
 npm run dev
-# or
-node dist/index.js
+
+# VPS: set LOG_LEVEL=debug in .env, then restart
+docker compose -f docker-compose.vps.yml restart
 ```

@@ -74,7 +74,7 @@ nanoclaw/
 
 ```bash
 # 1. Clone 本 fork
-git clone https://github.com/yourusername/nanoclaw
+git clone https://github.com/aceonaceon/nanoclaw
 cd nanoclaw
 
 # 2. 安裝依賴
@@ -263,67 +263,123 @@ cd container
 
 ## 🚢 VPS 部署
 
-### 多機器人配置
+### 架構：Docker-in-Docker
 
-本 Fork 針對在單一 VPS 上運行多個機器人進行優化：
+NanoClaw 在 VPS 上使用兩層容器架構：
 
-```yaml
-# docker-compose.vps.yml
-services:
-  bot-a:
-    image: nanoclaw-agent:latest  # 共享映像檔
-    environment:
-      - BOT_TOKEN=${BOT_A_TOKEN}
-    volumes:
-      - ./groups/bot-a:/workspace/groups
-
-  bot-b:
-    image: nanoclaw-agent:latest  # 相同映像檔
-    environment:
-      - BOT_TOKEN=${BOT_B_TOKEN}
-    volumes:
-      - ./groups/bot-b:/workspace/groups
 ```
+┌─────────────────────────────────────────────────────────────┐
+│                     VPS 主機 (Ubuntu)                        │
+│                                                              │
+│  Docker Engine                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  主容器 (nanoclaw-bot1)                                │  │
+│  │  - Node.js 路由程序                                    │  │
+│  │  - Telegram 連線                                       │  │
+│  │  - Docker CLI（透過 socket 掛載控制主機 Docker）        │  │
+│  │                                                        │  │
+│  │     每則訊息產生 ──▶  ┌───────────────────────┐        │  │
+│  │                       │  Agent 容器           │        │  │
+│  │                       │  - Claude Agent SDK   │        │  │
+│  │                       │  - 沙箱化工具          │        │  │
+│  │                       │  - 綁定掛載的目錄      │        │  │
+│  │                       └───────────────────────┘        │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  Volumes: data-bot1/, groups-bot1/, store-bot1/              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**主容器**負責 Telegram 訊息處理和路由。每收到一則訊息，會透過主機的 Docker socket 產生一個短暫的 **Agent 容器**。Agent 容器以沙箱化工具運行 Claude，並綁定掛載群組資料。
+
+### 前置需求
+
+- Ubuntu VPS（已在 22.04/24.04 測試，建議 2GB+ 記憶體）
+- 已安裝 Docker Engine（[docs.docker.com/engine/install](https://docs.docker.com/engine/install/ubuntu/)）
+- Git
+- 以下認證方式擇一：
+  - **Anthropic API Key**：從 [console.anthropic.com](https://console.anthropic.com/) 取得（按量計費，VPS 推薦）
+  - **Claude OAuth Token**：Claude Pro/Max 訂閱方案（在本機執行 `claude` 後，從 `~/.claude/.credentials.json` 擷取 token）
+- **Telegram Bot Token**：從 [@BotFather](https://t.me/BotFather) 取得 — 建立新 bot 並複製 token
 
 ### 部署步驟
 
 ```bash
-# 1. 在你的 VPS 上 clone 專案
-git clone https://github.com/yourusername/nanoclaw
+# 1. Clone 專案
+git clone https://github.com/aceonaceon/nanoclaw
 cd nanoclaw
 
-# 2. 安裝依賴並編譯
-npm install
-npm run build
-
-# 3. 設定環境變數
+# 2. 設定環境變數
 cp .env.vps.example .env
-nano .env  # 填入 BOT1_TOKEN, ANTHROPIC_API_KEY 等
+nano .env
+# 必填：設定 ANTHROPIC_API_KEY（或 CLAUDE_CODE_OAUTH_TOKEN）和 BOT1_TOKEN
 
-# 4. 初始化目錄結構（首次部署時必須）
+# 3. 初始化目錄結構（僅首次需要）
+#    建立 groups-bot1/, data-bot1/, store-bot1/ 並設定正確權限
 ./init-vps-dirs.sh
 
-# 5. 建置 agent 容器映像（首次執行前必須）
-cd container
-./build.sh
-cd ..
+# 4. 建置 agent 容器映像（首次，或更新 skills 後）
+cd container && ./build.sh && cd ..
 
-# 6. 使用 Docker Compose 啟動所有機器人
+# 5. 啟動服務
 docker compose -f docker-compose.vps.yml up -d --build
 
-# 7. 配對你的 Telegram 聊天為主群組
+# 6. 配對你的 Telegram 聊天為主群組
 ./pair-main-group.sh
-# 依照提示：在 Telegram 發送訊息給 bot，然後確認
+# → 開啟 Telegram，發送任意訊息給你的 bot，然後在終端確認
 
-# 8. 檢查狀態和日誌
-docker compose -f docker-compose.vps.yml ps
+# 7. 確認正常運作
 docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
 ```
 
-**注意**：
-- 目錄初始化（步驟 4）只需執行一次，為 agent 容器準備掛載目錄
-- agent 映像建置（步驟 5）只需執行一次，或當你更新 skills/依賴時執行
-- 配對腳本（步驟 6）會註冊你的 Telegram 聊天，讓 bot 可以回應你的訊息
+### Docker Compose 結構
+
+實際的 `docker-compose.vps.yml` 使用 Docker-in-Docker 搭配主機 socket 掛載：
+
+```yaml
+services:
+  nanoclaw-bot1:
+    build:
+      context: .
+      dockerfile: Dockerfile.vps
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # 控制主機 Docker
+      - ./data-bot1:/app/data         # Bot 狀態與 session
+      - ./groups-bot1:/app/groups     # 群組記憶與檔案
+      - ./store-bot1:/app/store       # Telegram 認證與 SQLite DB
+      - ./container:/app/container    # Agent 容器建置上下文
+    environment:
+      - TELEGRAM_BOT_TOKEN=${BOT1_TOKEN}
+      - ASSISTANT_NAME=${BOT1_NAME:-Andy}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - HOST_PROJECT_ROOT=${PWD}          # 告知 agent 掛載使用主機路徑
+      - HOST_GROUPS_DIR=${PWD}/groups-bot1
+      - HOST_DATA_DIR=${PWD}/data-bot1
+```
+
+若要新增更多 bot，取消 `docker-compose.vps.yml` 中 `nanoclaw-bot2` 區段的註解，並在 `.env` 設定 `BOT2_TOKEN`。
+
+### 更新與維護
+
+```bash
+cd nanoclaw
+
+# 拉取最新變更
+git pull
+
+# 重建並重啟
+docker compose -f docker-compose.vps.yml up -d --build
+
+# 若 skills 或 agent 依賴有變更，也需重建 agent 映像：
+cd container && ./build.sh && cd ..
+docker compose -f docker-compose.vps.yml restart
+```
+
+### 重要事項
+
+- `init-vps-dirs.sh` 會將目錄擁有者設為 UID 1000（agent 容器中的 `node` 使用者）— 這對綁定掛載權限至關重要
+- Agent 容器的 entrypoint 也會執行 `chown` 作為安全網，再透過 `gosu` 降權至 `node`
+- `HOST_PROJECT_ROOT` 環境變數會觸發 `container-runner.ts` 中的 VPS 模式，使用主機路徑而非容器內部路徑進行綁定掛載
 - 配對後，可以直接與 bot 對話，不需要觸發詞
 
 ---
@@ -468,6 +524,41 @@ export function createMyTools() {
 
 ## 🐛 疑難排解
 
+### VPS：Agent 容器無回應（掛起）
+
+最常見的 VPS 問題。按順序檢查：
+
+```bash
+# 1. 檢查 agent 容器是否有產生
+docker ps -a --filter "ancestor=nanoclaw-agent:latest"
+
+# 2. 檢查 agent 容器內的程序（找到執行中的容器）
+docker exec <container_id> ps aux
+
+# 3. 檢查 agent 容器內的檔案權限
+docker exec <container_id> ls -la /home/node/.claude/
+docker exec <container_id> ls -la /workspace/group/
+
+# 4. 若權限顯示 root:root，重新執行初始化腳本：
+./init-vps-dirs.sh
+docker compose -f docker-compose.vps.yml restart
+```
+
+**根本原因**：主機以 root 建立目錄，但 agent 容器以 `node`（UID 1000）執行。entrypoint 的 `chown` + `init-vps-dirs.sh` 可修復此問題。
+
+### VPS：日誌與除錯
+
+```bash
+# 主容器日誌（路由器、Telegram 連線）
+docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
+
+# 詳細 agent 日誌
+# 編輯 .env：LOG_LEVEL=debug，然後重啟
+
+# 每次 agent 執行的日誌（在主容器掛載的 volume 中）
+ls groups-bot1/main/logs/
+```
+
 ### Skills 找不到
 
 ```bash
@@ -538,6 +629,6 @@ MIT - 參見 [LICENSE](../../LICENSE)
 
 <p align="center">
   用 ❤️ 為 NanoClaw 社群打造<br>
-  <a href="https://github.com/yourusername/nanoclaw/issues">回報錯誤</a> •
-  <a href="https://github.com/yourusername/nanoclaw/pulls">提交 PR</a>
+  <a href="https://github.com/aceonaceon/nanoclaw/issues">回報錯誤</a> •
+  <a href="https://github.com/aceonaceon/nanoclaw/pulls">提交 PR</a>
 </p>

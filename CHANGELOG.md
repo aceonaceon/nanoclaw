@@ -152,4 +152,4 @@ This release introduces a complete overhaul of the Skills system, making NanoCla
 
 For issues related to:
 - **Original features**: [gavrielc/nanoclaw/issues](https://github.com/gavrielc/nanoclaw/issues)
-- **Skills system**: [This fork's issues](https://github.com/yourusername/nanoclaw/issues)
+- **Skills system**: [This fork's issues](https://github.com/aceonaceon/nanoclaw/issues)

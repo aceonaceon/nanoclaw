@@ -64,4 +64,4 @@
 
 ---
 
-需要協助？請到 [Issues](https://github.com/yourusername/nanoclaw/issues) 提出。
+需要協助？請到 [Issues](https://github.com/aceonaceon/nanoclaw/issues) 提出。

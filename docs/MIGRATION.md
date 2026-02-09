@@ -49,7 +49,7 @@ cp -r .claude/skills custom-skills.backup
 
 ```bash
 # If you haven't added this fork as remote
-git remote add fork https://github.com/yourusername/nanoclaw
+git remote add fork https://github.com/aceonaceon/nanoclaw
 git fetch fork
 
 # Merge changes
@@ -314,8 +314,8 @@ docker build -t nanoclaw .
 
 ### Community Support
 
-- GitHub Issues: [Report problems](https://github.com/yourusername/nanoclaw/issues)
-- Discussions: [Ask questions](https://github.com/yourusername/nanoclaw/discussions)
+- GitHub Issues: [Report problems](https://github.com/aceonaceon/nanoclaw/issues)
+- Discussions: [Ask questions](https://github.com/aceonaceon/nanoclaw/discussions)
 
 ---
 

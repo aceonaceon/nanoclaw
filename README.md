@@ -74,7 +74,7 @@ nanoclaw/
 
 ```bash
 # 1. Clone this fork
-git clone https://github.com/yourusername/nanoclaw
+git clone https://github.com/aceonaceon/nanoclaw
 cd nanoclaw
 
 # 2. Install dependencies
@@ -263,67 +263,123 @@ cd container
 
 ## 🚢 VPS Deployment
 
-### Multi-Bot Configuration
+### Architecture: Docker-in-Docker
 
-This fork is optimized for running multiple bots on a single VPS:
+NanoClaw on VPS uses a two-layer container architecture:
 
-```yaml
-# docker-compose.vps.yml
-services:
-  bot-a:
-    image: nanoclaw-agent:latest  # Shared image
-    environment:
-      - BOT_TOKEN=${BOT_A_TOKEN}
-    volumes:
-      - ./groups/bot-a:/workspace/groups
-
-  bot-b:
-    image: nanoclaw-agent:latest  # Same image
-    environment:
-      - BOT_TOKEN=${BOT_B_TOKEN}
-    volumes:
-      - ./groups/bot-b:/workspace/groups
 ```
+┌─────────────────────────────────────────────────────────────┐
+│                     VPS Host (Ubuntu)                        │
+│                                                              │
+│  Docker Engine                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  Main Container (nanoclaw-bot1)                        │  │
+│  │  - Node.js router process                              │  │
+│  │  - Telegram connection                                 │  │
+│  │  - Docker CLI (controls host Docker via socket mount)  │  │
+│  │                                                        │  │
+│  │     spawns per-message ──▶  ┌───────────────────────┐  │  │
+│  │                             │  Agent Container      │  │  │
+│  │                             │  - Claude Agent SDK   │  │  │
+│  │                             │  - Sandboxed tools    │  │  │
+│  │                             │  - Bind-mounted dirs  │  │  │
+│  │                             └───────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  Volumes: data-bot1/, groups-bot1/, store-bot1/              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The **main container** handles Telegram messaging and routing. For each incoming message, it spawns a short-lived **agent container** via the host's Docker socket. Agent containers run Claude with sandboxed tools and bind-mounted group data.
+
+### Prerequisites
+
+- Ubuntu VPS (tested on 22.04/24.04, 2GB+ RAM recommended)
+- Docker Engine installed ([docs.docker.com/engine/install](https://docs.docker.com/engine/install/ubuntu/))
+- Git
+- One of:
+  - **Anthropic API Key** from [console.anthropic.com](https://console.anthropic.com/) (pay-per-use, recommended for VPS)
+  - **Claude OAuth Token** from a Claude Pro/Max subscription (extract from `~/.claude/.credentials.json` after logging in with `claude`)
+- **Telegram Bot Token** from [@BotFather](https://t.me/BotFather) — create a new bot and copy the token
 
 ### Deployment Steps
 
 ```bash
-# 1. Clone the repository on your VPS
-git clone https://github.com/yourusername/nanoclaw
+# 1. Clone the repository
+git clone https://github.com/aceonaceon/nanoclaw
 cd nanoclaw
 
-# 2. Install dependencies and build
-npm install
-npm run build
-
-# 3. Configure environment variables
+# 2. Configure environment variables
 cp .env.vps.example .env
-nano .env  # Fill in BOT1_TOKEN, ANTHROPIC_API_KEY, etc.
+nano .env
+# Required: set ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN) and BOT1_TOKEN
 
-# 4. Initialize directory structure (required for first deployment)
+# 3. Initialize directory structure (first-time only)
+#    Creates groups-bot1/, data-bot1/, store-bot1/ with correct permissions
 ./init-vps-dirs.sh
 
-# 5. Build agent container image (required before first run)
-cd container
-./build.sh
-cd ..
+# 4. Build agent container image (first-time, or after updating skills)
+cd container && ./build.sh && cd ..
 
-# 6. Start all bots with Docker Compose
+# 5. Start the service
 docker compose -f docker-compose.vps.yml up -d --build
 
-# 7. Pair your Telegram chat as the main group
+# 6. Pair your Telegram chat as the main group
 ./pair-main-group.sh
-# Follow prompts: send a message to your bot in Telegram, then confirm
+# → Open Telegram, send any message to your bot, then confirm in terminal
 
-# 8. Check status and logs
-docker compose -f docker-compose.vps.yml ps
+# 7. Verify it's working
 docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
 ```
 
-**Note**:
-- Directory initialization (step 4) only needs to run once, preparing mount directories for agent containers
-- The agent image build (step 5) only needs to run once, or when you update skills/dependencies
-- The pairing script (step 7) registers your Telegram chat so the bot can respond to your messages
+### Docker Compose Structure
+
+The actual `docker-compose.vps.yml` uses Docker-in-Docker with host socket mounting:
+
+```yaml
+services:
+  nanoclaw-bot1:
+    build:
+      context: .
+      dockerfile: Dockerfile.vps
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Controls host Docker
+      - ./data-bot1:/app/data         # Bot state & sessions
+      - ./groups-bot1:/app/groups     # Group memory & files
+      - ./store-bot1:/app/store       # Telegram auth & SQLite DB
+      - ./container:/app/container    # Agent container build context
+    environment:
+      - TELEGRAM_BOT_TOKEN=${BOT1_TOKEN}
+      - ASSISTANT_NAME=${BOT1_NAME:-Andy}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - HOST_PROJECT_ROOT=${PWD}          # Tells agent mounts to use host paths
+      - HOST_GROUPS_DIR=${PWD}/groups-bot1
+      - HOST_DATA_DIR=${PWD}/data-bot1
+```
+
+To add more bots, uncomment the `nanoclaw-bot2` section in `docker-compose.vps.yml` and set `BOT2_TOKEN` in `.env`.
+
+### Updating & Maintenance
+
+```bash
+cd nanoclaw
+
+# Pull latest changes
+git pull
+
+# Rebuild and restart
+docker compose -f docker-compose.vps.yml up -d --build
+
+# If skills or agent dependencies changed, also rebuild the agent image:
+cd container && ./build.sh && cd ..
+docker compose -f docker-compose.vps.yml restart
+```
+
+### Key Notes
+
+- `init-vps-dirs.sh` sets directory ownership to UID 1000 (the `node` user inside agent containers) — this is critical for bind-mount permissions
+- The agent container entrypoint also runs `chown` as a safety net before dropping privileges to `node` via `gosu`
+- `HOST_PROJECT_ROOT` env var triggers VPS mode in `container-runner.ts`, which uses host paths for bind mounts instead of container-internal paths
 - After pairing, you can chat with the bot directly without trigger words
 
 ---
@@ -468,6 +524,41 @@ Modify NanoClaw itself:
 
 ## 🐛 Troubleshooting
 
+### VPS: Agent Container Hangs (No Response)
+
+The most common VPS issue. Check in order:
+
+```bash
+# 1. Check if agent containers are spawning
+docker ps -a --filter "ancestor=nanoclaw-agent:latest"
+
+# 2. Check agent container processes (find a running one)
+docker exec <container_id> ps aux
+
+# 3. Check file permissions inside agent container
+docker exec <container_id> ls -la /home/node/.claude/
+docker exec <container_id> ls -la /workspace/group/
+
+# 4. If permissions show root:root, re-run init script:
+./init-vps-dirs.sh
+docker compose -f docker-compose.vps.yml restart
+```
+
+**Root cause**: Host creates directories as root, but agent containers run as `node` (UID 1000). The entrypoint `chown` + `init-vps-dirs.sh` fix this.
+
+### VPS: Logs & Debugging
+
+```bash
+# Main container logs (router, Telegram connection)
+docker compose -f docker-compose.vps.yml logs -f nanoclaw-bot1
+
+# Verbose agent logs
+# Edit .env: LOG_LEVEL=debug, then restart
+
+# Per-agent run logs (inside main container's mounted volume)
+ls groups-bot1/main/logs/
+```
+
 ### Skills Not Found
 
 ```bash
@@ -538,6 +629,6 @@ MIT - See [LICENSE](LICENSE)
 
 <p align="center">
   Built with ❤️ for the NanoClaw community<br>
-  <a href="https://github.com/yourusername/nanoclaw/issues">Report Bug</a> •
-  <a href="https://github.com/yourusername/nanoclaw/pulls">Submit PR</a>
+  <a href="https://github.com/aceonaceon/nanoclaw/issues">Report Bug</a> •
+  <a href="https://github.com/aceonaceon/nanoclaw/pulls">Submit PR</a>
 </p>
