@@ -76,20 +76,21 @@ fi
 echo "📂 Using database: $DB_FILE"
 echo ""
 
-# Function to get latest chat
+# Function to get latest chat with timestamp
 get_latest_chat() {
-    sqlite3 "$DB_FILE" "SELECT chat_id, name FROM chats WHERE chat_id > 0 ORDER BY last_message_time DESC LIMIT 1" 2>/dev/null || echo ""
+    sqlite3 "$DB_FILE" "SELECT chat_id, name, last_message_time FROM chats WHERE chat_id > 0 ORDER BY last_message_time DESC LIMIT 1" 2>/dev/null || echo ""
 }
 
-INITIAL_CHAT=$(get_latest_chat)
+INITIAL_TIMESTAMP=$(get_latest_chat | cut -d'|' -f3)
 ATTEMPTS=0
 MAX_ATTEMPTS=60  # 60 seconds timeout
 
 while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
     sleep 1
     CURRENT_CHAT=$(get_latest_chat)
+    CURRENT_TIMESTAMP=$(echo "$CURRENT_CHAT" | cut -d'|' -f3)
 
-    if [ -n "$CURRENT_CHAT" ] && [ "$CURRENT_CHAT" != "$INITIAL_CHAT" ]; then
+    if [ -n "$CURRENT_CHAT" ] && [ "$CURRENT_TIMESTAMP" != "$INITIAL_TIMESTAMP" ]; then
         CHAT_ID=$(echo "$CURRENT_CHAT" | cut -d'|' -f1)
         CHAT_NAME=$(echo "$CURRENT_CHAT" | cut -d'|' -f2)
 
